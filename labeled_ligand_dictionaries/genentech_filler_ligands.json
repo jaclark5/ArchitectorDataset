@@ -1,0 +1,13 @@
+{
+    "carbonyl": {"smiles":"*<-[C-]#[O+] |$M;;$|","coordList":[0],"ligType":"mono", "bondType": "L", "charge": 0},
+    "carbide": {"smiles":"*#C |$M;$|","coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0},
+    "oxo": {"smiles":"*=O |$M;$|","coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0},
+    "hydroxide": {"smiles":"*O |$M;$|","coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0},
+    "nitride": {"smiles":"*#N |$M;$|","coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0},
+    "amide": {"smiles":"*N |$M;$|","coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0},
+    "amine": {"smiles":"*<-N |$M;$|","coordList":[0],"ligType":"mono", "bondType": "L", "charge": 0},
+    "fluoride": {"smiles":"*F |$M;$|","coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0},
+    "chloride": {"smiles":"*Cl |$M;$|","coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0},
+    "bromide": {"smiles":"*Br |$M;$|","coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0},
+    "iodide": {"smiles":"*I |$M;$|","coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0}
+}

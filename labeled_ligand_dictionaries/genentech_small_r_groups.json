@@ -1,0 +1,22 @@
+{
+    "fluorine": {"smiles":"*F |$PortB;$|", "charge": 0},
+    "chorine": {"smiles":"*Cl |$PortB;$|", "charge": 0},
+    "bromine": {"smiles":"*Br |$PortB;$|", "charge": 0},
+    "iodine": {"smiles":"*I |$PortB;$|", "charge": 0},
+    "hydroxy": {"smiles":"*O |$PortB;$|", "charge": 0},
+    "methoxy": {"smiles":"*OC |$PortB;;$|", "charge": 0},
+    "aldehyde": {"smiles":"*C=O |$PortB;;$|", "charge": 0},
+    "carboxyl": {"smiles":"*C(=O)O |$PortB;;;$|", "charge": 0},
+    "carboxylate": {"smiles":"*C(=O)[O-] |$PortB;;;$|", "charge": -1},
+    "amino": {"smiles":"*N |$PortB;$|", "charge": 0},
+    "methylamino": {"smiles":"*NC |$PortB;;$|", "charge": 0},
+    "dimethylamino": {"smiles":"*N(C)C |$PortB;;;$|", "charge": 0},
+    "nitrosyl": {"smiles":"*N=O |$PortB;;$|", "charge": 0},
+    "nitro": {"smiles":"*[N+](=O)[O-] |$PortB;;$|", "charge": 0, "charged_atoms": "True"},
+    "methyl": {"smiles":"*C |$PortB;$|", "charge": 0},
+    "ethyl": {"smiles":"*CC |$PortB;;$|", "charge": 0},
+    "isopropyl": {"smiles":"*C(C)C |$PortB;;;$|", "charge": 0},
+    "amido": {"smiles":"*C(=O)N |$PortB;;;$|", "charge": 0},
+    "perfluoromethyl": {"smiles":"*C(F)(F)F |$PortB;;;;$|", "charge": 0},
+    "nitrile": {"smiles":"*C#N |$PortB;;$|", "charge": 0}
+}

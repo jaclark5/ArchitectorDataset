@@ -1,0 +1,20 @@
+{
+    "fluoride": {"smiles":"F", "coordList":[0], "ligType":"mono", "bondType": "X", "charge": 0},
+    "choride": {"smiles":"Cl", "coordList":[0], "ligType":"mono", "bondType": "X", "charge": 0},
+    "bromide": {"smiles":"Br", "coordList":[0], "ligType":"mono", "bondType": "X", "charge": 0},
+    "hydroxyl": {"smiles":"[O][H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [0]},
+    "methyl": {"smiles":"[C]([H])([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [0, 0, 0]},
+    "thiol": {"smiles":"[S][H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [0]},
+    "amine": {"smiles":"N([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [0, 0]},
+    "phosphine": {"smiles":"P([H])([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "L", "charge": 0, "functional_inds": [0, 0, 0]},
+    "methoxy": {"smiles":"[O][C]([H])([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [1]},
+    "isobutyl": {"smiles":"[C]([C]([H])([H])[H])([C]([H])([H])[H])[C]([H])([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [1, 5, 9]},
+    "methylthiol": {"smiles":"[S][C]([H])([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [1]},
+    "dimethylamine": {"smiles":"N([C]([H])([H])[H])[C]([H])([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [1, 5]},
+    "trimethylphosphine": {"smiles":"P([C]([H])([H])[H])([C]([H])([H])[H])[C]([H])([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "L", "charge": 0, "functional_inds": [1, 5, 9]},
+    "fluorooxy": {"smiles":"[O][F]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [0]},
+    "trifluoromethyl": {"smiles":"[C]([F])([F])[F]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [0, 0, 0]},
+    "fluorothiol": {"smiles":"[S][F]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [0]},
+    "trifluoroamine": {"smiles":"N([F])[F]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": 0, "functional_inds": [0, 0]},
+    "trifluorophosphine": {"smiles":"P([F])([F])[F]", "coordList":[0],"ligType":"mono", "bondType": "L", "charge": 0, "functional_inds": [0, 0, 0]}
+}

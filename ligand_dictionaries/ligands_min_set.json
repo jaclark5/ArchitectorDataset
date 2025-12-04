@@ -1,0 +1,7 @@
+{
+    "hydride": {"smiles":"[H-1]", "coordList":[0], "ligType":"mono", "bondType": "X", "charge": -1},
+    "fluoride": {"smiles":"[F-1]", "coordList":[0], "ligType":"mono", "bondType": "X", "charge": -1},
+    "methyl": {"smiles":"[C-2]([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "functional_inds": [0, 0, 0], "charge": -2},
+    "amine": {"smiles":"[N-1]([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "functional_inds": [0, 0], "charge": -1},
+    "phosphine": {"smiles":"[P]([H])([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "L", "functional_inds": [0, 0, 0], "charge": -1}
+}
