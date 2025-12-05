@@ -1,0 +1,30 @@
+{
+    "elements": {
+        "Fe": [0, 1, 2, 3, 4, 5, 6, 7],
+        "Pd": [1, 2, 3, 4, 5],
+        "Zn": [0, 1, 2],
+        "Cu": [0, 1, 2, 3, 4],
+        "Li": [1],
+        "Mg": [0, 1, 2]
+    },
+    "coordination": {
+        "1": ["single"], 
+        "2": ["bent_109", "linear"], 
+        "3": ["t_shaped", "trigonal_planar", "trigonal_pyramidal"], 
+        "4": ["seesaw", "square_planar", "tetrahedral"], 
+        "5": ["pentagonal_planar", "square_pyramidal", "trigonal_bipyramidal"], 
+        "6": ["hexagonal_planar", "octahedral", "pentagonal_pyramidal", "trigonal_prismatic"], 
+        "7": ["capped_octahedral", "capped_trigonal_prismatic", "hexagonal_pyramidal", "pentagonal_bipyramidal"], 
+        "8": ["axial_bicapped_trigonal_prismatic", "bicapped_trigonal_prismatic", "dodecahedral", "hexagonal_bipyramidal", "square_antiprismatic", "square_prismatic"], 
+        "9": ["capped_square_antiprismatic", "tri_tri_mer_capped", "tricapped_trigonal_prismatic"], 
+        "10": ["axial_bicapped_hexagonal_planar"], 
+        "12": ["penta_bi_capped_pyramidal"]
+    },
+    "ligand_types": ["choride", "methyl", "methanediide", "ammonia", "amine", "imido", "water", "hydroxyl", "oxo", "phosphine", "phosphido", "hydrogen sulfide", "thiol", "sulfido"],
+    "ligand_subtypes": ["W", "N", "D"],
+    "include_variant_counts": true,
+    "forbid_fn": "architector_dataset_generate_structures.skip_function",
+    "max_abs_charge": 1,
+    "ligand_charges": [0, -1, -2, 0, -1, -2, 0, -1, -2, 0, -1, 0, -1, 0],
+    "count_only": true
+}
