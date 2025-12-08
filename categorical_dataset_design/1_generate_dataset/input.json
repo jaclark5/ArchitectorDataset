@@ -23,7 +23,7 @@
     "ligand_types": ["choride", "methyl", "methanediide", "ammonia", "amine", "imido", "water", "hydroxyl", "oxo", "phosphine", "phosphido", "hydrogen sulfide", "thiol", "sulfido"],
     "ligand_subtypes": ["W", "N", "D"],
     "include_variant_counts": true,
-    "forbid_fn": "architector_dataset_generate_structures.skip_function",
+    "forbid_fn_name": "architector_dataset_generate_structures.skip_function",
     "max_abs_charge": 1,
     "ligand_charges": [0, -1, -2, 0, -1, -2, 0, -1, -2, 0, -1, 0, -1, 0],
     "count_only": true

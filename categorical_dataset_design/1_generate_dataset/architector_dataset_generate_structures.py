@@ -33,8 +33,206 @@ import itertools
 from collections import Counter
 import concurrent.futures
 import json
+import multiprocessing
 
 import pandas as pd
+
+
+def _generate_ligand_combinations(cn, variants, variant_to_components, ox, max_abs_charge):
+    """
+    Generate all valid ligand multisets for a given coordination number.
+    
+    Yields tuples of ligand variant keys that satisfy charge constraints.
+    
+    Parameters
+    ----------
+    cn : int
+        Coordination number (number of ligands).
+    variants : list of str
+        List of ligand variant identifiers (e.g., 'L1|W').
+    variant_to_components : dict
+        Maps variant keys to their properties including charge.
+    ox : int
+        Oxidation state of the metal center.
+    max_abs_charge : int or None
+        Maximum absolute charge constraint. If None, no charge filtering.
+        
+    Yields
+    ------
+    tuple of str
+        A multiset of ligand variants as a sorted tuple.
+    """
+    if max_abs_charge is not None:
+        min_target = -max_abs_charge - ox
+        max_target = max_abs_charge - ox
+        
+        # Pre-fetch charges for variants
+        pool_with_charges = []
+        for v in variants:
+            c = variant_to_components[v].get('chg', 0)
+            pool_with_charges.append((v, c))
+        
+        if pool_with_charges:
+            charges = [c for _, c in pool_with_charges]
+            min_pool_chg = min(charges)
+            max_pool_chg = max(charges)
+        else:
+            min_pool_chg = 0
+            max_pool_chg = 0
+        
+        def generate_recursive(start_idx, current_n, current_q):
+            if current_n == 0:
+                if min_target <= current_q <= max_target:
+                    yield ()
+                return
+            
+            # Pruning
+            if current_q + (current_n * max_pool_chg) < min_target:
+                return
+            if current_q + (current_n * min_pool_chg) > max_target:
+                return
+            
+            for i in range(start_idx, len(pool_with_charges)):
+                v, c = pool_with_charges[i]
+                for tail in generate_recursive(i, current_n - 1, current_q + c):
+                    yield (v,) + tail
+        
+        yield from generate_recursive(0, cn, 0)
+    else:
+        yield from itertools.combinations_with_replacement(variants, cn)
+
+
+def candidate_generator(elements, coordination, variants, variant_to_components, max_abs_charge):
+    """
+    Generator that yields individual candidate structures one at a time.
+    
+    This is the core generator for memory-efficient iteration over all possible
+    chemical complex structures. Each yielded item contains all information
+    needed to construct a candidate dictionary.
+    
+    Parameters
+    ----------
+    elements : dict
+        Maps element symbols to lists of oxidation states.
+    coordination : dict
+        Maps coordination numbers to lists of geometry names.
+    variants : list of str
+        List of all ligand variant identifiers.
+    variant_to_components : dict
+        Maps variant keys to their properties.
+    max_abs_charge : int or None
+        Maximum absolute charge constraint.
+        
+    Yields
+    ------
+    tuple
+        (elem, ox, cn, geom, ligand_multiset) for each valid candidate.
+    """
+    for elem, ox_list in elements.items():
+        for ox in ox_list:
+            for cn, geoms in coordination.items():
+                for geom in geoms:
+                    for lig_multi in _generate_ligand_combinations(
+                        cn, variants, variant_to_components, ox, max_abs_charge
+                    ):
+                        yield (elem, ox, cn, geom, lig_multi)
+
+
+# Module-level shared data for worker processes (set by initializer)
+_worker_data = {}
+
+
+def _init_worker(variant_to_components, ligand_types, ligand_subtypes, 
+                 include_variant_counts, forbid_fn_name, max_abs_charge):
+    """Initialize worker process with shared data."""
+    global _worker_data
+    _worker_data['variant_to_components'] = variant_to_components
+    _worker_data['ligand_types'] = ligand_types
+    _worker_data['ligand_subtypes'] = ligand_subtypes
+    _worker_data['include_variant_counts'] = include_variant_counts
+    _worker_data['max_abs_charge'] = max_abs_charge
+    
+    # Load forbid function if specified
+    if forbid_fn_name:
+        if "." in forbid_fn_name and not forbid_fn_name.endswith(".py"):
+            parts = forbid_fn_name.rsplit(".", 1)
+            module_path, function_name = parts[0], parts[1]
+            module = __import__(module_path, fromlist=[function_name])
+            _worker_data['forbid_fn'] = getattr(module, function_name)
+        else:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("forbid_module", forbid_fn_name)
+            if spec and spec.loader:
+                forbid_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(forbid_module)
+                _worker_data['forbid_fn'] = forbid_module.forbid_fn
+            else:
+                _worker_data['forbid_fn'] = None
+    else:
+        _worker_data['forbid_fn'] = None
+
+
+def _process_single_candidate(args):
+    """
+    Process a single candidate structure.
+    
+    Parameters
+    ----------
+    args : tuple
+        (elem, ox, cn, geom, lig_multi) tuple from candidate_generator.
+        
+    Returns
+    -------
+    dict or None
+        Candidate dictionary if valid, None if forbidden.
+    """
+    elem, ox, cn, geom, lig_multi = args
+    
+    # Access shared worker data
+    variant_to_components = _worker_data['variant_to_components']
+    ligand_types = _worker_data['ligand_types']
+    ligand_subtypes = _worker_data['ligand_subtypes']
+    include_variant_counts = _worker_data['include_variant_counts']
+    forbid_fn = _worker_data['forbid_fn']
+    max_abs_charge = _worker_data['max_abs_charge']
+    
+    counts_variant = Counter(lig_multi)
+    counts_type = Counter()
+    counts_prop = Counter()
+    
+    charge = ox
+    for var_key, ct in counts_variant.items():
+        comp = variant_to_components[var_key]
+        counts_type[comp['type']] += ct
+        counts_prop[comp['prop']] += ct
+        if max_abs_charge is not None:
+            charge += comp.get('chg', 0) * ct
+    
+    candidate = {
+        'Element': elem,
+        'Ox': ox,
+        'CN': cn,
+        'Geometry': geom,
+        'Charge': charge,
+        'Ligand_multiset_variants': list(lig_multi),  # Use list for JSON serialization
+    }
+    
+    # counts per type
+    for t in ligand_types:
+        candidate[f'count_type_{t}'] = counts_type.get(t, 0)
+    # counts per property
+    for p in ligand_subtypes:
+        candidate[f'count_prop_{p}'] = counts_prop.get(p, 0)
+    # optional: counts per variant
+    if include_variant_counts:
+        for v in variant_to_components:
+            col = f"count_var_{v.replace('|','_')}"
+            candidate[col] = counts_variant.get(v, 0)
+    
+    if forbid_fn and forbid_fn(candidate, variant_to_components):
+        return None
+    
+    return candidate
 
 
 def expand_candidates_with_variants(
@@ -44,14 +242,19 @@ def expand_candidates_with_variants(
     ligand_subtypes=['W', 'N', 'D'],
     include_variant_counts=False,
     forbid_fn=None,
+    forbid_fn_name=None,
     max_abs_charge=None,
     ligand_charges=None,
     n_cores=None,
     output_file=None,
     count_only=True,
+    chunksize=1000,
 ):
     """
     Generate a DataFrame of candidate chemical complexes with ligand variants.
+    
+    Uses a memory-efficient streaming approach where each structure is generated
+    lazily and processed one at a time by parallel workers.
 
     Parameters
     ----------
@@ -81,259 +284,162 @@ def expand_candidates_with_variants(
         - candidate (dict): A dictionary representing a chemical complex candidate.
         - variant_to_components (dict): A dictionary mapping ligand variant identifiers to their properties.
         Returns True if the candidate should be excluded, False otherwise. Default is None.
+    forbid_fn_name : str, optional
+        Module path to the forbid function (e.g., "module.submodule.function").
+        Used for parallel execution where functions cannot be pickled directly.
     max_abs_charge : int, optional
-        Maximum absolute charge allowed for a complex. If the absolute value of the oxidation
-        state plus the total charge of the ligands is greater than this value, the complex is 
-        not recorded. Default is None.
+        Maximum absolute charge allowed for a complex.
     ligand_charges : list[int], optional
-        List of the same length as the ligand types containing their charge as if they've taken
-        any metal electrons so that X-type ligands have a charge of -1. Default is None.
+        List of charges for each ligand type.
     n_cores : int, optional
-        Number of parallel jobs to run. If None, uses default ProcessPoolExecutor behavior.
-        If 1, runs serially.
+        Number of parallel jobs. If None, uses all available cores. If 1, runs serially.
     output_file : str, optional
-        Path to a file (JSONL or CSV) to save candidates incrementally. 
-        If provided, the function will write results to this file as they are generated
-        and return None (or an empty DataFrame) to avoid memory issues.
-        JSONL (.jsonl) is recommended for robustness.
+        Path to a JSONL file to save candidates incrementally.
     count_only : bool, optional
-        If true, the candidates are not recorded, but the resulting structures are counted
-        and the total returned
+        If True, only count structures without storing them. Default is True.
+    chunksize : int, optional
+        Number of candidates to process per chunk in parallel mode. Default is 1000.
 
     Returns
     -------
     pd.DataFrame or None or int
-        DataFrame containing all valid candidate complexes, or None if output_file is used, or 
-        an integer of the number of structures if count_only is used.
+        DataFrame of candidates, None if output_file used, or count if count_only.
     """
     
     if max_abs_charge is not None:
         if ligand_charges is None:
             raise ValueError("ligand_charges must be provided if max_abs_charge is not None.")
         if len(ligand_charges) != len(ligand_types):
-            raise ValueError("ligand_charges must map to all ligand_types, lists are not the same length.")
+            raise ValueError("ligand_charges must map to all ligand_types.")
     else:
-        if ligand_charges is not None:
-            ligand_charges = None
-        
+        ligand_charges = None
 
-    # build full list of ligand variants as strings like 'L1|W'
+    # Build variant list and mapping
     variants = []
     variant_to_components = {}
-    for i,t in enumerate(ligand_types):
+    for i, t in enumerate(ligand_types):
         for s in ligand_subtypes:
             key = f"{t}|{s}"
             variants.append(key)
             variant_to_components[key] = {'type': t, 'prop': s}
-            if max_abs_charge is not None:
+            if max_abs_charge is not None and ligand_charges is not None:
                 variant_to_components[key]['chg'] = ligand_charges[i]
 
-    def task_generator():
-        for elem, ox_list in elements.items():
-            for ox in ox_list:
-                for cn, geoms in coordination.items():
-                    for geom in geoms:
-                        # Split tasks by the first ligand to reduce task size and allow better parallelization
-                        # We fix the first variant, and choose the remaining (cn-1) from variants[i:]
-                        # This corresponds to the logic of combinations_with_replacement
-                        for i, first_variant in enumerate(variants):
-                            yield (
-                                elem, ox, cn, geom,
-                                (first_variant,), variants[i:], cn - 1,
-                                variant_to_components, 
-                                ligand_types, ligand_subtypes, 
-                                include_variant_counts, forbid_fn, max_abs_charge
-                            )
-
-    # Helper to write batch to file
-    def write_batch(batch_rows, file_handle, is_jsonl):
-        if not batch_rows:
-            return
-        if is_jsonl:
-            for row in batch_rows:
-                file_handle.write(json.dumps(row) + '\n')
-        else:
-            raise ValueError("Only jsonl file types are currently accepted.")
-
-    # Prepare output file if requested
+    # Prepare output file
     f_out = None
-    is_jsonl = False
     if output_file:
-        if output_file.endswith('.jsonl'):
-            is_jsonl = True
-            f_out = open(output_file, 'w')
-        else:
-            # Fallback or error? Let's support JSONL primarily for now as it handles the tuple data best.
-            # If user asks for CSV, we might need to flatten the tuple or stringify it.
-            print("Warning: output_file should end in .jsonl for best results. Writing as JSONL anyway.")
-            is_jsonl = True
-            f_out = open(output_file, 'w')
+        if not output_file.endswith('.jsonl'):
+            print("Warning: output_file should end in .jsonl. Writing as JSONL anyway.")
+        f_out = open(output_file, 'w')
 
     rows = []
-    total_tasks = sum(1 for _ in task_generator())
-    completed_tasks = 0
-
-    def task_progress():
-        nonlocal completed_tasks
-        completed_tasks += 1
-        progress = (completed_tasks / total_tasks) * 100
-        if completed_tasks % (total_tasks // 100) == 0:
-            print(f"Progress: {progress:.2f}% complete")
+    count = 0
+    processed = 0
+    
+    # Progress tracking
+    def print_progress(n_processed):
+        if n_processed > 0 and n_processed % 100000 == 0:
+            print(f"Processed {n_processed:,} candidates...")
 
     try:
-        count = 0
         if n_cores == 1:
-            for task in task_generator():
-                batch = _generate_candidates_batch(*task)
-                task_progress()
-                count += len(batch)
+            # Serial execution - use forbid_fn directly
+            for args in candidate_generator(
+                elements, coordination, variants, variant_to_components, max_abs_charge
+            ):
+                elem, ox, cn, geom, lig_multi = args
+                
+                counts_variant = Counter(lig_multi)
+                counts_type = Counter()
+                counts_prop = Counter()
+                
+                for var_key, ct in counts_variant.items():
+                    comp = variant_to_components[var_key]
+                    counts_type[comp['type']] += ct
+                    counts_prop[comp['prop']] += ct
+                
+                candidate = {
+                    'Element': elem,
+                    'Ox': ox,
+                    'CN': cn,
+                    'Geometry': geom,
+                    'Ligand_multiset_variants': list(lig_multi),
+                }
+                
+                for t in ligand_types:
+                    candidate[f'count_type_{t}'] = counts_type.get(t, 0)
+                for p in ligand_subtypes:
+                    candidate[f'count_prop_{p}'] = counts_prop.get(p, 0)
+                if include_variant_counts:
+                    for v in variant_to_components:
+                        col = f"count_var_{v.replace('|','_')}"
+                        candidate[col] = counts_variant.get(v, 0)
+                
+                if forbid_fn and forbid_fn(candidate, variant_to_components):
+                    continue
+                
+                count += 1
+                processed += 1
+                print_progress(processed)
+                
                 if count_only:
                     pass
                 elif f_out:
-                    write_batch(batch, f_out, is_jsonl)
+                    f_out.write(json.dumps(candidate) + '\n')
                 else:
-                    rows.extend(batch)
+                    rows.append(candidate)
         else:
-            # Use ProcessPoolExecutor for parallel execution
-            with concurrent.futures.ProcessPoolExecutor(max_workers=n_cores) as executor:
-                # Submit all tasks
-                futures = [executor.submit(_generate_candidates_batch, *task) for task in task_generator()]
-                count = 0
-                for future in concurrent.futures.as_completed(futures):
-                    batch = future.result()
-                    task_progress()
-                    count += len(batch)
+            # Parallel execution using Pool.imap_unordered for memory efficiency
+            n_workers = n_cores if n_cores else multiprocessing.cpu_count()
+            
+            with multiprocessing.Pool(
+                processes=n_workers,
+                initializer=_init_worker,
+                initargs=(
+                    variant_to_components, 
+                    ligand_types, 
+                    ligand_subtypes,
+                    include_variant_counts, 
+                    forbid_fn_name,
+                    max_abs_charge
+                )
+            ) as pool:
+                # imap_unordered processes items lazily, one at a time
+                gen = candidate_generator(
+                    elements, coordination, variants, variant_to_components, max_abs_charge
+                )
+                
+                for candidate in pool.imap_unordered(
+                    _process_single_candidate, gen, chunksize=chunksize
+                ):
+                    processed += 1
+                    print_progress(processed)
+                    
+                    if candidate is None:  # Filtered by forbid_fn
+                        continue
+                    
+                    count += 1
                     if count_only:
                         pass
                     elif f_out:
-                        write_batch(batch, f_out, is_jsonl)
+                        f_out.write(json.dumps(candidate) + '\n')
                     else:
-                        rows.extend(batch)
+                        rows.append(candidate)
     finally:
         if f_out:
             f_out.close()
+
+    print(f"There are {count:,} valid candidates (from {processed:,} generated)")
+    
     if count_only:
-        print(f"There are {count} candidates")
         return count
     elif output_file:
-        print(f"{count} candidates saved to {output_file}")
+        print(f"{count:,} candidates saved to {output_file}")
         return None
-
-    df = pd.DataFrame(rows)
-    print(f"There are {count} candidates")
-    df.insert(0, 'cand_id', range(1, len(df)+1))
-    return df
-
-
-def _generate_candidates_batch(
-    elem, 
-    ox, 
-    cn, 
-    geom, 
-    fixed_ligands,
-    pool_variants,
-    n_remaining,
-    variant_to_components, 
-    ligand_types, 
-    ligand_subtypes, 
-    include_variant_counts, 
-    forbid_fn, 
-    max_abs_charge
-):
-    rows = []
     
-    # If max_abs_charge is set, use a recursive generator with pruning
-    if max_abs_charge is not None:
-        min_target = -max_abs_charge - ox
-        max_target = max_abs_charge - ox
-        
-        # Pre-fetch charges for pool variants to avoid dict lookups in inner loop
-        pool_with_charges = []
-        for v in pool_variants:
-            c = variant_to_components[v].get('chg', 0)
-            pool_with_charges.append((v, c))
-            
-        if pool_with_charges:
-            charges = [c for _, c in pool_with_charges]
-            min_pool_chg = min(charges)
-            max_pool_chg = max(charges)
-        else:
-            min_pool_chg = 0
-            max_pool_chg = 0
-            
-        # Calculate charge of fixed ligands
-        current_charge = 0
-        for v in fixed_ligands:
-            current_charge += variant_to_components[v].get('chg', 0)
-            
-        def generate_combinations_recursive(start_idx, current_n, current_q):
-            if current_n < 0:
-                return
-            if current_n == 0:
-                if min_target <= current_q <= max_target:
-                    yield ()
-                return
-
-            # Pruning: check if it's possible to reach the target range
-            # If even adding the max possible charge is not enough to reach min_target
-            if current_q + (current_n * max_pool_chg) < min_target:
-                return
-            # If even adding the min possible charge exceeds max_target
-            if current_q + (current_n * min_pool_chg) > max_target:
-                return
-
-            for i in range(start_idx, len(pool_with_charges)):
-                v, c = pool_with_charges[i]
-                # Recurse
-                for tail in generate_combinations_recursive(i, current_n - 1, current_q + c):
-                    yield (v,) + tail
-
-        combinations_iter = generate_combinations_recursive(0, n_remaining, current_charge)
-        
-    else:
-        combinations_iter = itertools.combinations_with_replacement(pool_variants, n_remaining)
-
-    for tail in combinations_iter:
-        lig_multi = fixed_ligands + tail
-        counts_variant = Counter(lig_multi)
-        counts_type = Counter()
-        counts_prop = Counter()
-        
-        charge = ox
-        for var_key, ct in counts_variant.items():
-            comp = variant_to_components[var_key]
-            counts_type[comp['type']] += ct
-            counts_prop[comp['prop']] += ct
-            if max_abs_charge is not None:
-                charge += comp['chg']
-        
-        # Note: If max_abs_charge is not None, the generator guarantees validity,
-        # so we don't strictly need to check again, but we calculate 'charge' anyway.
-        
-        candidate = {
-            'Element': elem,
-            'Ox': ox,
-            'CN': cn,
-            'Geometry': geom,
-            'Ligand_multiset_variants': tuple(lig_multi),
-        }
-
-        # counts per type (numeric)
-        for t in ligand_types:
-            candidate[f'count_type_{t}'] = counts_type.get(t, 0)
-        # counts per property
-        for p in ligand_subtypes:
-            candidate[f'count_prop_{p}'] = counts_prop.get(p, 0)
-        # optional: counts per variant
-        if include_variant_counts:
-            for v in variant_to_components:
-                col = f"count_var_{v.replace('|','_')}"
-                candidate[col] = counts_variant.get(v, 0)
-
-        if forbid_fn and forbid_fn(candidate, variant_to_components):
-            continue
-        rows.append(candidate)
-    return rows
+    df = pd.DataFrame(rows)
+    df.insert(0, 'cand_id', range(1, len(df) + 1))
+    return df
 
 
 def skip_function(candidate, variant_to_components):
@@ -413,31 +519,28 @@ if __name__ == "__main__":
         ligand_charges = [int(c) for c in ligand_charges]
     output_file = input_data.get("output_file", None)
     count_only = input_data.get("count_only", True)
+    chunksize = input_data.get("chunksize", 1000)
     if "n_cores" in input_data:
         raise ValueError("n_cores must be entered as a command line argument.")
 
-    # Load forbid function if provided
+    # Get forbid function name for parallel workers
+    forbid_fn_name = input_data.get("forbid_fn", None)
+    
+    # For serial execution (n_cores=1), load the function directly
     forbid_fn = None
-    if "forbid_fn" in input_data:
-        forbid_fn_path = input_data["forbid_fn"]
-        
-        # Check if it's a module path (e.g., "module.submodule.function")
-        if "." in forbid_fn_path and not forbid_fn_path.endswith(".py"):
-            # Import from module path
-            parts = forbid_fn_path.rsplit(".", 1)
-            module_path = parts[0]
-            function_name = parts[1]
-            
+    if n_cores == 1 and forbid_fn_name:
+        if "." in forbid_fn_name and not forbid_fn_name.endswith(".py"):
+            parts = forbid_fn_name.rsplit(".", 1)
+            module_path, function_name = parts[0], parts[1]
             module = __import__(module_path, fromlist=[function_name])
             forbid_fn = getattr(module, function_name)
         else:
-            # Import from file path
             import importlib.util
-            spec = importlib.util.spec_from_file_location("forbid_module", forbid_fn_path)
-            forbid_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(forbid_module)
-            forbid_fn = forbid_module.forbid_fn
-
+            spec = importlib.util.spec_from_file_location("forbid_module", forbid_fn_name)
+            if spec and spec.loader:
+                forbid_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(forbid_module)
+                forbid_fn = forbid_module.forbid_fn
 
     result = expand_candidates_with_variants(
         elements=elements,
@@ -446,11 +549,13 @@ if __name__ == "__main__":
         ligand_subtypes=ligand_subtypes,
         include_variant_counts=include_variant_counts,
         forbid_fn=forbid_fn,
+        forbid_fn_name=forbid_fn_name,
         max_abs_charge=max_abs_charge,
         ligand_charges=ligand_charges,
-        n_cores=input_data.get("n_cores", None),
+        n_cores=n_cores,
         output_file=output_file,
-        count_only=count_only
+        count_only=count_only,
+        chunksize=chunksize
     )
 
     if count_only:
