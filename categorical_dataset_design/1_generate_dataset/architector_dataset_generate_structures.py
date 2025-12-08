@@ -31,7 +31,6 @@ Usage
 import argparse
 import itertools
 from collections import Counter
-import concurrent.futures
 import json
 import multiprocessing
 
@@ -102,7 +101,7 @@ def _generate_ligand_combinations(cn, variants, variant_to_components, ox, max_a
         yield from itertools.combinations_with_replacement(variants, cn)
 
 
-def candidate_generator(elements, coordination, variants, variant_to_components, max_abs_charge):
+def candidate_generator(elements, coordination, variants, variant_to_components, max_abs_charge, forbid_fn=None):
     """
     Generator that yields individual candidate structures one at a time.
     
@@ -122,6 +121,10 @@ def candidate_generator(elements, coordination, variants, variant_to_components,
         Maps variant keys to their properties.
     max_abs_charge : int or None
         Maximum absolute charge constraint.
+    forbid_fn : callable, optional
+        A function that takes (candidate, variant_to_components) and returns True
+        if the candidate should be excluded. If provided, forbidden candidates
+        are never yielded.
         
     Yields
     ------
@@ -135,6 +138,18 @@ def candidate_generator(elements, coordination, variants, variant_to_components,
                     for lig_multi in _generate_ligand_combinations(
                         cn, variants, variant_to_components, ox, max_abs_charge
                     ):
+                        # Early filtering with forbid_fn if provided
+                        if forbid_fn is not None:
+                            # Build minimal candidate dict for forbid_fn check
+                            candidate = {
+                                'Element': elem,
+                                'Ox': ox,
+                                'CN': cn,
+                                'Geometry': geom,
+                                'Ligand_multiset_variants': list(lig_multi),
+                            }
+                            if forbid_fn(candidate, variant_to_components):
+                                continue
                         yield (elem, ox, cn, geom, lig_multi)
 
 
@@ -143,7 +158,7 @@ _worker_data = {}
 
 
 def _init_worker(variant_to_components, ligand_types, ligand_subtypes, 
-                 include_variant_counts, forbid_fn_name, max_abs_charge):
+                 include_variant_counts, max_abs_charge):
     """Initialize worker process with shared data."""
     global _worker_data
     _worker_data['variant_to_components'] = variant_to_components
@@ -151,30 +166,14 @@ def _init_worker(variant_to_components, ligand_types, ligand_subtypes,
     _worker_data['ligand_subtypes'] = ligand_subtypes
     _worker_data['include_variant_counts'] = include_variant_counts
     _worker_data['max_abs_charge'] = max_abs_charge
-    
-    # Load forbid function if specified
-    if forbid_fn_name:
-        if "." in forbid_fn_name and not forbid_fn_name.endswith(".py"):
-            parts = forbid_fn_name.rsplit(".", 1)
-            module_path, function_name = parts[0], parts[1]
-            module = __import__(module_path, fromlist=[function_name])
-            _worker_data['forbid_fn'] = getattr(module, function_name)
-        else:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("forbid_module", forbid_fn_name)
-            if spec and spec.loader:
-                forbid_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(forbid_module)
-                _worker_data['forbid_fn'] = forbid_module.forbid_fn
-            else:
-                _worker_data['forbid_fn'] = None
-    else:
-        _worker_data['forbid_fn'] = None
 
 
 def _process_single_candidate(args):
     """
     Process a single candidate structure.
+    
+    Note: forbid_fn filtering is done in the generator before candidates
+    reach this function, so all candidates here are valid.
     
     Parameters
     ----------
@@ -183,8 +182,8 @@ def _process_single_candidate(args):
         
     Returns
     -------
-    dict or None
-        Candidate dictionary if valid, None if forbidden.
+    dict
+        Candidate dictionary with all computed fields.
     """
     elem, ox, cn, geom, lig_multi = args
     
@@ -193,7 +192,6 @@ def _process_single_candidate(args):
     ligand_types = _worker_data['ligand_types']
     ligand_subtypes = _worker_data['ligand_subtypes']
     include_variant_counts = _worker_data['include_variant_counts']
-    forbid_fn = _worker_data['forbid_fn']
     max_abs_charge = _worker_data['max_abs_charge']
     
     counts_variant = Counter(lig_multi)
@@ -214,7 +212,7 @@ def _process_single_candidate(args):
         'CN': cn,
         'Geometry': geom,
         'Charge': charge,
-        'Ligand_multiset_variants': list(lig_multi),  # Use list for JSON serialization
+        'Ligand_multiset_variants': list(lig_multi),
     }
     
     # counts per type
@@ -229,10 +227,100 @@ def _process_single_candidate(args):
             col = f"count_var_{v.replace('|','_')}"
             candidate[col] = counts_variant.get(v, 0)
     
-    if forbid_fn and forbid_fn(candidate, variant_to_components):
-        return None
-    
     return candidate
+
+
+def count_candidates(
+    elements,
+    coordination,
+    ligand_types,
+    ligand_subtypes=['W', 'N', 'D'],
+    forbid_fn=None,
+    forbid_fn_name=None,
+    max_abs_charge=None,
+    ligand_charges=None,
+    progress_interval=1000000,
+):
+    """
+    Efficiently count the number of valid candidate structures.
+    
+    This is much faster than expand_candidates_with_variants with count_only=True
+    because it skips all the multiprocessing setup and candidate dict construction.
+    
+    Parameters
+    ----------
+    elements : dict
+        Dictionary mapping element symbols (str) to lists of oxidation states (int).
+    coordination : dict
+        Dictionary mapping coordination numbers (int) to lists of geometry names (str).
+    ligand_types : list of str
+        List of ligand type identifiers.
+    ligand_subtypes : list of str, optional
+        List of ligand subtype identifiers. Default is ['W', 'N', 'D'].
+    forbid_fn : callable, optional
+        A function that takes (candidate, variant_to_components) and returns True
+        if the candidate should be excluded.
+    forbid_fn_name : str, optional
+        Module path to the forbid function (e.g., "module.submodule.function").
+    max_abs_charge : int, optional
+        Maximum absolute charge allowed for a complex.
+    ligand_charges : list[int], optional
+        List of charges for each ligand type.
+    progress_interval : int, optional
+        Print progress every N candidates. Default is 1,000,000. Set to 0 to disable.
+        
+    Returns
+    -------
+    int
+        Total number of valid candidates.
+    """
+    if max_abs_charge is not None:
+        if ligand_charges is None:
+            raise ValueError("ligand_charges must be provided if max_abs_charge is not None.")
+        if len(ligand_charges) != len(ligand_types):
+            raise ValueError("ligand_charges must map to all ligand_types.")
+    else:
+        ligand_charges = None
+
+    # Build variant list and mapping
+    variants = []
+    variant_to_components = {}
+    for i, t in enumerate(ligand_types):
+        for s in ligand_subtypes:
+            key = f"{t}|{s}"
+            variants.append(key)
+            variant_to_components[key] = {'type': t, 'prop': s}
+            if max_abs_charge is not None and ligand_charges is not None:
+                variant_to_components[key]['chg'] = ligand_charges[i]
+
+    # Load forbid function if needed
+    generator_forbid_fn = forbid_fn
+    if generator_forbid_fn is None and forbid_fn_name:
+        if "." in forbid_fn_name and not forbid_fn_name.endswith(".py"):
+            parts = forbid_fn_name.rsplit(".", 1)
+            module_path, function_name = parts[0], parts[1]
+            module = __import__(module_path, fromlist=[function_name])
+            generator_forbid_fn = getattr(module, function_name)
+        else:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("forbid_module", forbid_fn_name)
+            if spec and spec.loader:
+                forbid_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(forbid_module)
+                generator_forbid_fn = forbid_module.forbid_fn
+
+    # Simply iterate and count - no dict building, no multiprocessing overhead
+    count = 0
+    for _ in candidate_generator(
+        elements, coordination, variants, variant_to_components, max_abs_charge,
+        forbid_fn=generator_forbid_fn
+    ):
+        count += 1
+        if progress_interval and count % progress_interval == 0:
+            print(f"Counted {count:,} candidates...")
+    
+    print(f"Total: {count:,} candidates")
+    return count
 
 
 def expand_candidates_with_variants(
@@ -295,15 +383,13 @@ def expand_candidates_with_variants(
         Number of parallel jobs. If None, uses all available cores. If 1, runs serially.
     output_file : str, optional
         Path to a JSONL file to save candidates incrementally.
-    count_only : bool, optional
-        If True, only count structures without storing them. Default is True.
     chunksize : int, optional
         Number of candidates to process per chunk in parallel mode. Default is 1000.
 
     Returns
     -------
-    pd.DataFrame or None or int
-        DataFrame of candidates, None if output_file used, or count if count_only.
+    pd.DataFrame or None
+        DataFrame of candidates, None if output_file used.
     """
     
     if max_abs_charge is not None:
@@ -341,11 +427,29 @@ def expand_candidates_with_variants(
         if n_processed > 0 and n_processed % 100000 == 0:
             print(f"Processed {n_processed:,} candidates...")
 
+    # Load forbid function for generator filtering (needed for both serial and parallel)
+    generator_forbid_fn = forbid_fn  # Use provided function if available
+    if generator_forbid_fn is None and forbid_fn_name:
+        # Load from name for parallel mode
+        if "." in forbid_fn_name and not forbid_fn_name.endswith(".py"):
+            parts = forbid_fn_name.rsplit(".", 1)
+            module_path, function_name = parts[0], parts[1]
+            module = __import__(module_path, fromlist=[function_name])
+            generator_forbid_fn = getattr(module, function_name)
+        else:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("forbid_module", forbid_fn_name)
+            if spec and spec.loader:
+                forbid_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(forbid_module)
+                generator_forbid_fn = forbid_module.forbid_fn
+
     try:
         if n_cores == 1:
-            # Serial execution - use forbid_fn directly
+            # Serial execution - forbid_fn filtering happens in generator
             for args in candidate_generator(
-                elements, coordination, variants, variant_to_components, max_abs_charge
+                elements, coordination, variants, variant_to_components, max_abs_charge,
+                forbid_fn=generator_forbid_fn
             ):
                 elem, ox, cn, geom, lig_multi = args
                 
@@ -353,16 +457,20 @@ def expand_candidates_with_variants(
                 counts_type = Counter()
                 counts_prop = Counter()
                 
+                charge = ox
                 for var_key, ct in counts_variant.items():
                     comp = variant_to_components[var_key]
                     counts_type[comp['type']] += ct
                     counts_prop[comp['prop']] += ct
+                    if max_abs_charge is not None:
+                        charge += comp.get('chg', 0) * ct
                 
                 candidate = {
                     'Element': elem,
                     'Ox': ox,
                     'CN': cn,
                     'Geometry': geom,
+                    'Charge': charge,
                     'Ligand_multiset_variants': list(lig_multi),
                 }
                 
@@ -375,16 +483,12 @@ def expand_candidates_with_variants(
                         col = f"count_var_{v.replace('|','_')}"
                         candidate[col] = counts_variant.get(v, 0)
                 
-                if forbid_fn and forbid_fn(candidate, variant_to_components):
-                    continue
+
                 
                 count += 1
                 processed += 1
                 print_progress(processed)
-                
-                if count_only:
-                    pass
-                elif f_out:
+                if f_out:
                     f_out.write(json.dumps(candidate) + '\n')
                 else:
                     rows.append(candidate)
@@ -400,13 +504,13 @@ def expand_candidates_with_variants(
                     ligand_types, 
                     ligand_subtypes,
                     include_variant_counts, 
-                    forbid_fn_name,
                     max_abs_charge
                 )
             ) as pool:
-                # imap_unordered processes items lazily, one at a time
+                # Generator filters candidates before they're sent to workers
                 gen = candidate_generator(
-                    elements, coordination, variants, variant_to_components, max_abs_charge
+                    elements, coordination, variants, variant_to_components, max_abs_charge,
+                    forbid_fn=generator_forbid_fn
                 )
                 
                 for candidate in pool.imap_unordered(
@@ -415,13 +519,12 @@ def expand_candidates_with_variants(
                     processed += 1
                     print_progress(processed)
                     
-                    if candidate is None:  # Filtered by forbid_fn
+                    # All candidates from generator are valid (forbid_fn already applied)
+                    if candidate is None:
                         continue
                     
                     count += 1
-                    if count_only:
-                        pass
-                    elif f_out:
+                    if f_out:
                         f_out.write(json.dumps(candidate) + '\n')
                     else:
                         rows.append(candidate)
@@ -431,9 +534,7 @@ def expand_candidates_with_variants(
 
     print(f"There are {count:,} valid candidates (from {processed:,} generated)")
     
-    if count_only:
-        return count
-    elif output_file:
+    if output_file:
         print(f"{count:,} candidates saved to {output_file}")
         return None
     
@@ -523,47 +624,40 @@ if __name__ == "__main__":
     if "n_cores" in input_data:
         raise ValueError("n_cores must be entered as a command line argument.")
 
-    # Get forbid function name for parallel workers
+    # Get forbid function name - loading is handled inside expand_candidates_with_variants
     forbid_fn_name = input_data.get("forbid_fn", None)
-    
-    # For serial execution (n_cores=1), load the function directly
-    forbid_fn = None
-    if n_cores == 1 and forbid_fn_name:
-        if "." in forbid_fn_name and not forbid_fn_name.endswith(".py"):
-            parts = forbid_fn_name.rsplit(".", 1)
-            module_path, function_name = parts[0], parts[1]
-            module = __import__(module_path, fromlist=[function_name])
-            forbid_fn = getattr(module, function_name)
-        else:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("forbid_module", forbid_fn_name)
-            if spec and spec.loader:
-                forbid_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(forbid_module)
-                forbid_fn = forbid_module.forbid_fn
 
-    result = expand_candidates_with_variants(
-        elements=elements,
-        coordination=coordination,
-        ligand_types=ligand_types,
-        ligand_subtypes=ligand_subtypes,
-        include_variant_counts=include_variant_counts,
-        forbid_fn=forbid_fn,
-        forbid_fn_name=forbid_fn_name,
-        max_abs_charge=max_abs_charge,
-        ligand_charges=ligand_charges,
-        n_cores=n_cores,
-        output_file=output_file,
-        count_only=count_only,
-        chunksize=chunksize
-    )
-
+    # Use fast counting if requested and only counting
     if count_only:
+        result = count_candidates(
+            elements=elements,
+            coordination=coordination,
+            ligand_types=ligand_types,
+            ligand_subtypes=ligand_subtypes,
+            forbid_fn_name=forbid_fn_name,
+            max_abs_charge=max_abs_charge,
+            ligand_charges=ligand_charges,
+        )
         print(f"Total number of structures: {result}")
-    elif output_file:
-        print(f"Candidates saved to {output_file}")
     else:
-        print("Candidates generated successfully.")
+        result = expand_candidates_with_variants(
+            elements=elements,
+            coordination=coordination,
+            ligand_types=ligand_types,
+            ligand_subtypes=ligand_subtypes,
+            include_variant_counts=include_variant_counts,
+            forbid_fn_name=forbid_fn_name,
+            max_abs_charge=max_abs_charge,
+            ligand_charges=ligand_charges,
+            n_cores=n_cores,
+            output_file=output_file,
+            chunksize=chunksize
+        )
+
+        if output_file:
+            print(f"Candidates saved to {output_file}")
+        else:
+            print("Candidates generated successfully.")
 
 
 
