@@ -1,0 +1,6 @@
+Fri Dec  5 08:25:08 AM PST 2025
+Running job on host hpc3-23-09
+32 allocated CPUs
+Progress: 1.00% complete
+Progress: 2.00% complete
+Progress: 3.00% complete
