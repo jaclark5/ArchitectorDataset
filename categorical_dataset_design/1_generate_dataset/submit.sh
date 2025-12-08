@@ -5,7 +5,7 @@
 #SBATCH -t 2-00:00:00
 #SBATCH --nodes=1            ## use 1 node, don't ask for multiple
 #SBATCH --ntasks 1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=32
 #SBATCH --account DMOBLEY_LAB
 #SBATCH --mem-per-cpu=4G     ## ask for 1Gb memory per CPU
 #SBATCH --constraint=fastscratch

@@ -1,0 +1,28 @@
+name: architector
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python
+  - pip
+  - xtb-python
+  - ase
+  - numpy
+  - py3Dmol
+  - openbabel
+  - scipy
+  - jupyter
+  - numba
+  - pandas
+  - crest
+  - pynauty
+  - tqdm
+  - mendeleev
+  - rdkit
+  - nglview
+  - scikit-learn
+
+  - pip:
+      - git+https://github.com/jaclark5/Architector@issue_install
+
