@@ -35,6 +35,7 @@ import json
 import multiprocessing
 
 import pandas as pd
+import periodictable
 
 
 def _generate_ligand_combinations(cn, variants, variant_to_components, ox, max_abs_charge):
@@ -215,6 +216,13 @@ def _process_single_candidate(args):
         'Ligand_multiset_variants': list(lig_multi),
     }
     
+    # Calculate molecular weight if mass data is available
+    if 'mass' in variant_to_components.get(next(iter(variant_to_components)), {}):
+        mw = getattr(periodictable, elem).mass
+        for var_key, ct in counts_variant.items():
+            mw += variant_to_components[var_key]['mass'] * ct
+        candidate['MW'] = mw
+    
     # counts per type
     for t in ligand_types:
         candidate[f'count_type_{t}'] = counts_type.get(t, 0)
@@ -333,6 +341,7 @@ def expand_candidates_with_variants(
     forbid_fn_name=None,
     max_abs_charge=None,
     ligand_charges=None,
+    ligand_mw=None,
     n_cores=None,
     output_file=None,
     count_only=True,
@@ -379,6 +388,8 @@ def expand_candidates_with_variants(
         Maximum absolute charge allowed for a complex.
     ligand_charges : list[int], optional
         List of charges for each ligand type.
+    ligand_mw : list[float], optional
+        List of molecular weights for each ligand type.
     n_cores : int, optional
         Number of parallel jobs. If None, uses all available cores. If 1, runs serially.
     output_file : str, optional
@@ -400,6 +411,9 @@ def expand_candidates_with_variants(
     else:
         ligand_charges = None
 
+    if ligand_mw is not None and len(ligand_mw) != len(ligand_types):
+        raise ValueError("ligand_mw must map to all ligand_types.")
+
     # Build variant list and mapping
     variants = []
     variant_to_components = {}
@@ -410,6 +424,8 @@ def expand_candidates_with_variants(
             variant_to_components[key] = {'type': t, 'prop': s}
             if max_abs_charge is not None and ligand_charges is not None:
                 variant_to_components[key]['chg'] = ligand_charges[i]
+            if ligand_mw is not None:
+                variant_to_components[key]['mass'] = ligand_mw[i]
 
     # Prepare output file
     f_out = None
@@ -473,6 +489,12 @@ def expand_candidates_with_variants(
                     'Charge': charge,
                     'Ligand_multiset_variants': list(lig_multi),
                 }
+                
+                if ligand_mw is not None:
+                    mw = getattr(periodictable, elem).mass
+                    for var_key, ct in counts_variant.items():
+                        mw += variant_to_components[var_key]['mass'] * ct
+                    candidate['MW'] = mw
                 
                 for t in ligand_types:
                     candidate[f'count_type_{t}'] = counts_type.get(t, 0)
@@ -618,6 +640,9 @@ if __name__ == "__main__":
     ligand_charges = input_data.get("ligand_charges", None)
     if ligand_charges is not None:
         ligand_charges = [int(c) for c in ligand_charges]
+    ligand_mw = input_data.get("ligand_mw", None)
+    if ligand_mw is not None:
+        ligand_mw = [float(m) for m in ligand_mw]
     output_file = input_data.get("output_file", None)
     count_only = input_data.get("count_only", False)
     chunksize = input_data.get("chunksize", 1000)
@@ -649,6 +674,7 @@ if __name__ == "__main__":
             forbid_fn_name=forbid_fn_name,
             max_abs_charge=max_abs_charge,
             ligand_charges=ligand_charges,
+            ligand_mw=ligand_mw,
             n_cores=n_cores,
             output_file=output_file,
             chunksize=chunksize

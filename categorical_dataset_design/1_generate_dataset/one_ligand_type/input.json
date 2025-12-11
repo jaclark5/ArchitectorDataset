@@ -21,10 +21,11 @@
         "12": ["penta_bi_capped_pyramidal"]
     },
     "ligand_types": ["halide", "methyl", "methanediide", "ammonia", "amine", "imido", "water", "hydroxyl", "oxo", "phosphine", "phosphido", "hydrogen sulfide", "thiol", "sulfido"],
-    "ligand_subtypes": ["W", "N", "D"],
+    "ligand_subtypes": ["N"],
     "include_variant_counts": true,
     "forbid_fn_name": "architector_dataset_generate_structures.skip_function",
     "max_abs_charge": 1,
     "ligand_charges": [0, -1, -2, 0, -1, -2, 0, -1, -2, 0, -1, 0, -1, 0],
-    "count_only": true
+    "ligand_mw": [35.446, 15.035, 14.026, 17.032, 16.023, 15.014, 18.017, 17.008, 15.999, 34.000, 32.992, 34.077, 33.068, 32.059],
+    "output_file": "dataset.jsonl"
 }
