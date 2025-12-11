@@ -1,5 +1,5 @@
 {
-    "choride": {"smiles":"Cl", "coordList":[0], "ligType":"mono", "bondType": "X", "charge": 0},
+    "halide": {"smiles":"Cl", "coordList":[0], "ligType":"mono", "bondType": "X", "charge": -1},
     "methyl": {"smiles":"[C-1]([H])([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": -1, "functional_inds": [0, 0, 0]},
     "methanediide": {"smiles":"[C-2]([H])[H]", "coordList":[0],"ligType":"mono", "bondType": "X", "charge": -2, "functional_inds": [0, 0]},
     "ammonia": {"smiles":"[N][H][H][H]", "coordList":[0],"ligType":"mono", "bondType": "L", "charge": 0, "functional_inds": [0, 0, 0]},

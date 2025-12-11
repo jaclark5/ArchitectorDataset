@@ -607,7 +607,7 @@ if __name__ == "__main__":
         input_data = json.load(f)
 
     # Extract parameters from the input JSON
-    n_cores = int(args.n_cores)
+    n_cores = int(args.n_cores) if args.n_cores is not None else None
     elements = {k: [int(v) for v in vals] if isinstance(vals, list) else [int(vals)] 
                 for k, vals in input_data["elements"].items()}
     coordination = {int(k): v for k, v in input_data["coordination"].items()}
@@ -619,7 +619,7 @@ if __name__ == "__main__":
     if ligand_charges is not None:
         ligand_charges = [int(c) for c in ligand_charges]
     output_file = input_data.get("output_file", None)
-    count_only = input_data.get("count_only", True)
+    count_only = input_data.get("count_only", False)
     chunksize = input_data.get("chunksize", 1000)
     if "n_cores" in input_data:
         raise ValueError("n_cores must be entered as a command line argument.")
