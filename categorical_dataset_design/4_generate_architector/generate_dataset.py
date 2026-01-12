@@ -3,8 +3,8 @@
 Dataset Generation Script for Organometallic Complexes using Architector
 
 This script processes a design CSV file to generate organometallic complexes 
-using the Architector package. It supports parallelization, progress tracking,
-and automatic checkpointing for robustness.
+using the Architector package. It supports parallelization with robust
+error handling and structure capture for failed cases.
 
 Usage:
     python generate_dataset.py <input_csv> [options]
@@ -12,8 +12,7 @@ Usage:
 Example:
     python generate_dataset.py ../2_generate_subset_metadata/a_subset1/selected_design.csv \
         --output-dir results \
-        --workers 4 \
-        --checkpoint-every 10
+        --workers 4
 """
 
 import argparse
@@ -23,7 +22,6 @@ import copy
 import time
 import traceback
 import json
-import pickle
 import pandas as pd
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -52,8 +50,7 @@ class DatasetGenerator:
                  input_csv: str,
                  ligand_dict_path: str = "../../ligand_dictionaries/ligands.json",
                  output_dir: str = "dataset_output",
-                 checkpoint_every: int = 10,
-                 progress_every: int = 1):
+                 output_chunk_size: int = 100000):
         """
         Initialize the dataset generator.
         
@@ -61,26 +58,15 @@ class DatasetGenerator:
             input_csv: Path to the input CSV with design specifications
             ligand_dict_path: Path to the ligand dictionary JSON file
             output_dir: Directory to store output files
-            checkpoint_every: Save checkpoint every N successful structures
-            progress_every: Print progress every N percent
+            output_chunk_size: Maximum number of structures per output file chunk
         """
         self.input_csv = input_csv
         self.ligand_dict_path = ligand_dict_path
         self.output_dir = Path(output_dir)
-        self.checkpoint_every = checkpoint_every
-        self.progress_every = progress_every
+        self.output_chunk_size = output_chunk_size
         
         # Create output directory structure
         self.output_dir.mkdir(exist_ok=True)
-        self.checkpoint_dir = self.output_dir / "checkpoints"
-        self.checkpoint_dir.mkdir(exist_ok=True)
-        
-        # File paths
-        self.checkpoint_file = self.checkpoint_dir / "dataset_checkpoint.pkl"
-        self.progress_log = self.checkpoint_dir / "dataset_progress.txt"
-        self.success_file = self.output_dir / "successful_structures.jsonl"
-        self.errors_file = self.output_dir / "error_structures.jsonl"
-        self.final_dataset = self.output_dir / "final_dataset.csv"
         
         # Load ligand dictionary
         self.ligand_dict = self._load_ligand_dict()
@@ -88,12 +74,12 @@ class DatasetGenerator:
         # Initialize data containers
         self.successful_structures = []
         self.error_structures = []
-        self.processed_states = set()
         
-        # Progress tracking
-        self.total_structures = 0
-        self.completed_count = 0
-        self.last_progress_percent = 0
+        # Chunk tracking
+        self.success_chunk_index = 0
+        self.error_chunk_index = 0
+        self.success_count_in_chunk = 0
+        self.error_count_in_chunk = 0
         
     def _load_ligand_dict(self) -> dict:
         """Load and sort the ligand dictionary."""
@@ -101,12 +87,13 @@ class DatasetGenerator:
             ligands = json.load(f)
         return dict(sorted(ligands.items()))
     
-    def _initialize_progress_log(self):
-        """Initialize progress log file."""
-        if not self.progress_log.exists():
-            with open(self.progress_log, 'w') as f:
-                f.write("Progress log initialized\n")
-            print("Progress log initialized")
+    def _get_success_file_path(self, chunk_index: int) -> Path:
+        """Get the path for a success file chunk."""
+        return self.output_dir / f"successful_structures_chunk_{chunk_index:04d}.jsonl"
+    
+    def _get_error_file_path(self, chunk_index: int) -> Path:
+        """Get the path for an error file chunk."""
+        return self.output_dir / f"error_structures_chunk_{chunk_index:04d}.jsonl"
     
     @staticmethod
     def make_state_key(metal: str, ox_state: int, cn: int, 
@@ -146,61 +133,40 @@ class DatasetGenerator:
         return ligand_dicts
     
     def _save_successful_structure(self, structure_data: dict):
-        """Save a successful structure to the JSONL file."""
-        with open(self.success_file, 'a') as f:
+        """Save a successful structure to the JSONL file with chunking."""
+        # Check if we need to start a new chunk
+        if self.success_count_in_chunk >= self.output_chunk_size:
+            self.success_chunk_index += 1
+            self.success_count_in_chunk = 0
+            print(f"  → Starting new success chunk {self.success_chunk_index}")
+        
+        success_file = self._get_success_file_path(self.success_chunk_index)
+        with open(success_file, 'a') as f:
             f.write(json.dumps(structure_data) + '\n')
+        self.success_count_in_chunk += 1
     
     def _save_error_structure(self, error_data: dict):
-        """Save an error structure to the JSONL file."""
-        with open(self.errors_file, 'a') as f:
+        """Save an error structure to the JSONL file with chunking."""
+        # Check if we need to start a new chunk
+        if self.error_count_in_chunk >= self.output_chunk_size:
+            self.error_chunk_index += 1
+            self.error_count_in_chunk = 0
+            print(f"  → Starting new error chunk {self.error_chunk_index}")
+        
+        error_file = self._get_error_file_path(self.error_chunk_index)
+        with open(error_file, 'a') as f:
             f.write(json.dumps(error_data) + '\n')
+        self.error_count_in_chunk += 1
     
-    def _update_progress(self):
-        """Update and display progress."""
-        self.completed_count += 1
-        progress_percent = int((self.completed_count / self.total_structures) * 100)
-        
-        if progress_percent >= self.last_progress_percent + self.progress_every:
-            print(f"Progress: {progress_percent}% ({self.completed_count}/{self.total_structures})")
-            self.last_progress_percent = progress_percent
-    
-    def _save_checkpoint(self):
-        """Save current progress to checkpoint file."""
-        checkpoint_data = {
-            'processed_states': list(self.processed_states),
-            'completed_count': self.completed_count,
-            'total_structures': self.total_structures,
-            'timestamp': time.time()
-        }
-        
-        with open(self.checkpoint_file, 'wb') as f:
-            pickle.dump(checkpoint_data, f)
-        
-        print(f"✓ Checkpoint saved: {self.completed_count}/{self.total_structures} completed")
-    
-    def _load_checkpoint(self) -> bool:
-        """Load previous checkpoint if it exists."""
-        try:
-            with open(self.checkpoint_file, 'rb') as f:
-                checkpoint_data = pickle.load(f)
-            
-            self.processed_states = set(checkpoint_data['processed_states'])
-            self.completed_count = checkpoint_data['completed_count']
-            print(f"✓ Loaded checkpoint: {self.completed_count} structures already processed")
-            return True
-        
-        except FileNotFoundError:
-            print("No checkpoint found, starting fresh")
-            return False
-    
-    def process_single_structure(self, structure_params: dict) -> tuple[bool, dict]:
+    def process_single_structure(self, structure_params: dict, ligand_dict: dict) -> tuple[bool, dict]:
         """
         Process a single structure. This function is designed to be called
-        in parallel processes.
-        
+        in parallel processes and is now thread-safe.
+
         Args:
             structure_params: dictionary containing structure parameters
-            
+            ligand_dict: ligand dictionary passed explicitly to avoid shared state
+
         Returns:
             tuple of (success: bool, result_data: dict)
         """
@@ -210,11 +176,11 @@ class DatasetGenerator:
         core_type = structure_params["core_type"]
         ligand_labels = structure_params["ligand_labels"]
         state_key = structure_params["state_key"]
-        
+
         try:
             # Create ligand dictionaries
-            ligand_dicts = self.ligand_dicts_from_labels(ligand_labels, self.ligand_dict)
-            
+            ligand_dicts = self.ligand_dicts_from_labels(ligand_labels, ligand_dict)
+
             # Create input dictionary for Architector
             input_dict = {
                 "core": {"metal": metal, 'coreCN': cn, "coreType": [core_type]},
@@ -227,23 +193,22 @@ class DatasetGenerator:
                     'n_symmetries': 100,
                     'n_conformers': 1,
                     'return_only_1': True,
-                    'save_init_geos': True,  # Save initial geometries before optimization
-                    # More lenient sanity checks to capture more preliminary structures
+                    'save_init_geos': True,
                     'assemble_sanity_checks': True,
-                    'assemble_graph_sanity_cutoff': 2.0,  # More lenient (default 1.8)
-                    'assemble_smallest_dist_cutoff': 0.25,  # More lenient (default 0.3)
+                    'assemble_graph_sanity_cutoff': 2.0,
+                    'assemble_smallest_dist_cutoff': 0.25,
                     'full_sanity_checks': True,
-                    'full_graph_sanity_cutoff': 1.8,  # More lenient (default 1.7)
-                    'full_smallest_dist_cutoff': 0.5,  # More lenient (default 0.55)
-                    'force_generation': False,  # Set to True to force structure generation even if xTB fails
+                    'full_graph_sanity_cutoff': 1.8,
+                    'full_smallest_dist_cutoff': 0.5,
+                    'force_generation': False,
                 },
             }
-            
+
             # Call Architector
             output = build_complex(input_dict)
             if not output:
                 raise ValueError("build_complex returned empty result")
-            
+
             # Get the first (and only) result
             result = next(iter(output.values()))
 
@@ -258,12 +223,7 @@ class DatasetGenerator:
             
             if ox_state != result["metal_ox"]:
                 raise ValueError("Metal oxidation state is not equal to assigned.")
-            
-            # Store only mol2 string for memory efficiency
-            # Convert to ASE/QCElemental later when needed
-            mol2_string = result['mol2string']
-            
-            # Prepare successful structure data (memory-optimized)
+
             success_data = {
                 'state_key': state_key,
                 'metal': metal,
@@ -274,28 +234,13 @@ class DatasetGenerator:
                 'total_charge': result['total_charge'],
                 'multiplicity': result['xtb_n_unpaired_electrons'] + 1,
                 'xtb_energy': result['energy'],
-                'mol2_string': mol2_string,  # Final optimized structure
-                'init_mol2_string': result.get('init_mol2string', ''),  # Initial structure before optimization
+                'mol2_string': result['mol2string'],
+                'init_mol2_string': result.get('init_mol2string', ''),
                 'timestamp': time.time()
             }
-            
+
             return True, success_data
         except Exception as e:
-            # Try to capture any preliminary structures that were generated
-            preliminary_mol2 = None
-            preliminary_init_mol2 = None
-            
-            # Check if we got any output from Architector before the error
-            # Note: output might not be defined if error occurred during build_complex call
-            try:
-                # Use globals() to safely check if output was created
-                if 'output' in locals() and locals()['output']:
-                    result = next(iter(locals()['output'].values()))
-                    preliminary_mol2 = result.get('mol2string', None)
-                    preliminary_init_mol2 = result.get('init_mol2string', None)
-            except:
-                pass  # If we can't extract preliminary data, continue with error logging
-            
             error_data = {
                 'state_key': state_key,
                 'metal': metal,
@@ -306,11 +251,9 @@ class DatasetGenerator:
                 'error_type': type(e).__name__,
                 'error_message': str(e),
                 'traceback': traceback.format_exc(),
-                'preliminary_mol2_string': preliminary_mol2,  # May be None if no structure generated
-                'preliminary_init_mol2_string': preliminary_init_mol2,  # Initial unoptimized structure
                 'timestamp': time.time()
             }
-            
+
             return False, error_data
 
     def generate_dataset(self, n_workers: int = 1) -> None:
@@ -326,13 +269,6 @@ class DatasetGenerator:
         df = pd.read_csv(self.input_csv, converters={'Ligand_multiset_variants': eval})
         print(f"Loaded {len(df)} structures from {self.input_csv}")
         
-        # Initialize progress tracking
-        self._initialize_progress_log()
-        self.total_structures = len(df)
-        
-        # Load checkpoint if exists
-        self._load_checkpoint()
-        
         # Prepare structure parameters for processing
         structure_params_list = []
         for i, row in df.iterrows():
@@ -344,10 +280,6 @@ class DatasetGenerator:
             ligand_labels = row_dict["Ligand_multiset_variants"]
             state_key = self.make_state_key(metal, ox_state, cn, ligand_labels, core_type)
             
-            # Skip if already processed
-            if state_key in self.processed_states:
-                continue
-                
             structure_params = {
                 'metal': metal,
                 'ox_state': ox_state,
@@ -358,7 +290,7 @@ class DatasetGenerator:
             }
             structure_params_list.append(structure_params)
         
-        print(f"Processing {len(structure_params_list)} remaining structures with {n_workers} workers...")
+        print(f"Processing {len(structure_params_list)} structures with {n_workers} workers...")
         
         # Process structures
         successful_count = 0
@@ -367,49 +299,29 @@ class DatasetGenerator:
         if n_workers == 1:
             # Sequential processing
             for params in structure_params_list:
-                success, result_data = self.process_single_structure(params)
+                success, result_data = self.process_single_structure(params, self.ligand_dict)
                 self._handle_result(success, result_data)
                 successful_count += success
                 error_count += not success
-                self._update_progress()
-                
-                if successful_count > 0 and successful_count % self.checkpoint_every == 0:
-                    self._save_checkpoint()
         else:
             # Parallel processing
             with ProcessPoolExecutor(max_workers=n_workers) as executor:
-                # Submit all tasks
                 future_to_params = {
-                    executor.submit(self.process_single_structure, params): params 
+                    executor.submit(self.process_single_structure, params, self.ligand_dict): params
                     for params in structure_params_list
                 }
-                
-                # Process completed tasks
+
                 for future in as_completed(future_to_params):
-                    try:
-                        success, result_data = future.result()
-                        self._handle_result(success, result_data)
-                        successful_count += success
-                        error_count += not success
-                        self._update_progress()
-                        
-                        if successful_count > 0 and successful_count % self.checkpoint_every == 0:
-                            self._save_checkpoint()
-                            
-                    except Exception as e:
-                        params = future_to_params[future]
-                        print(f"Unexpected error processing {params['state_key']}: {e}")
-                        error_count += 1
-                        self._update_progress()
-        
-        # Final checkpoint and summary
-        self._save_checkpoint()
-        
+                    success, result_data = future.result()
+                    self._handle_result(success, result_data)
+                    successful_count += success
+                    error_count += not success
+
         print(f"\nDataset generation completed!")
         print(f"Successful structures: {successful_count}")
         print(f"Failed structures: {error_count}")
         print(f"Total processed: {successful_count + error_count}")
-        
+
         # Create final dataset CSV
         self._create_final_dataset()
     
@@ -421,25 +333,24 @@ class DatasetGenerator:
         else:
             self._save_error_structure(result_data)
             self.error_structures.append(result_data)
-        
-        self.processed_states.add(result_data['state_key'])
-        
-        # Log to progress file
-        with open(self.progress_log, 'a') as f:
-            status = "SUCCESS" if success else "ERROR"
-            f.write(f"{status}: {result_data['state_key']}\n")
     
     def _create_final_dataset(self):
-        """Create final CSV dataset from successful structures."""
-        if not self.success_file.exists():
+        """Create final CSV dataset from all successful structure chunks."""
+        # Find all success chunk files
+        success_files = sorted(self.output_dir.glob("successful_structures_chunk_*.jsonl"))
+        
+        if not success_files:
             print("No successful structures found")
             return
         
-        # Read all successful structures
+        print(f"Reading {len(success_files)} success chunk file(s)...")
+        
+        # Read all successful structures from all chunks
         successful_data = []
-        with open(self.success_file, 'r') as f:
-            for line in f:
-                successful_data.append(json.loads(line))
+        for success_file in success_files:
+            with open(success_file, 'r') as f:
+                for line in f:
+                    successful_data.append(json.loads(line))
         
         if not successful_data:
             print("No successful structures found")
@@ -456,12 +367,13 @@ class DatasetGenerator:
             df_data[col] = [structure[col] for structure in successful_data]
         
         df_final = pd.DataFrame(df_data)
-        df_final.to_csv(self.final_dataset, index=False)
-        print(f"Final dataset saved to {self.final_dataset}")
+        final_dataset_path = self.output_dir / "final_dataset.csv"
+        df_final.to_csv(final_dataset_path, index=False)
+        print(f"Final dataset saved to {final_dataset_path}")
         print(f"Dataset contains {len(df_final)} successful structures")
 
 
-def main(input_csv: str, ligand_dict_path: str, output_dir: str, workers: int, checkpoint_every: int, progress_every: int):
+def main(input_csv: str, ligand_dict_path: str, output_dir: str, workers: int, output_chunk_size: int):
     """
     Main function to generate the dataset.
 
@@ -470,24 +382,21 @@ def main(input_csv: str, ligand_dict_path: str, output_dir: str, workers: int, c
         ligand_dict_path: Path to the ligand dictionary JSON file.
         output_dir: Directory to store output files.
         workers: Number of parallel workers to use.
-        checkpoint_every: Save checkpoint every N successful structures.
-        progress_every: Print progress every N percent.
+        output_chunk_size: Maximum number of structures per output file chunk.
     """
     # Create and run dataset generator
     generator = DatasetGenerator(
         input_csv=input_csv,
         ligand_dict_path=ligand_dict_path,
         output_dir=output_dir,
-        checkpoint_every=checkpoint_every,
-        progress_every=progress_every
+        output_chunk_size=output_chunk_size
     )
 
     print(f"Starting dataset generation...")
     print(f"Input: {input_csv}")
     print(f"Output directory: {output_dir}")
     print(f"Workers: {workers}")
-    print(f"Checkpoint every: {checkpoint_every} structures")
-    print(f"Progress updates every: {progress_every}%")
+    print(f"Output chunk size: {output_chunk_size} structures per file")
 
     start_time = time.time()
 
@@ -612,12 +521,12 @@ def mol2_to_qcelemental(mol2_string: str) -> Optional[dict]:
     return None
 
 
-def load_dataset_as_ase(jsonl_file: str) -> list[tuple[dict, 'Atoms']]:
+def load_dataset_as_ase(output_dir: str) -> list[tuple[dict, 'Atoms']]:
     """
-    Load entire dataset and convert all mol2 strings to ASE Atoms objects.
+    Load entire dataset from chunked files and convert all mol2 strings to ASE Atoms objects.
     
     Args:
-        jsonl_file: Path to successful_structures.jsonl file
+        output_dir: Path to the output directory containing chunked JSONL files
         
     Returns:
         List of (metadata_dict, ase_atoms) tuples
@@ -627,31 +536,38 @@ def load_dataset_as_ase(jsonl_file: str) -> list[tuple[dict, 'Atoms']]:
         from generate_dataset import load_dataset_as_ase
         
         # Load all structures as ASE objects
-        dataset = load_dataset_as_ase('dataset_output/successful_structures.jsonl')
+        dataset = load_dataset_as_ase('dataset_output')
         
         for metadata, atoms in dataset:
             print(f"Metal: {metadata['metal']}, Atoms: {len(atoms)}")
         ```
     """
+    from pathlib import Path
+    output_path = Path(output_dir)
+    
+    # Find all success chunk files
+    success_files = sorted(output_path.glob("successful_structures_chunk_*.jsonl"))
+    
     dataset = []
-    with open(jsonl_file, 'r') as f:
-        for line in f:
-            structure = json.loads(line)
-            atoms = mol2_to_ase(structure['mol2_string'])
-            if atoms:
-                # Remove mol2_string from metadata to save memory
-                metadata = {k: v for k, v in structure.items() if k != 'mol2_string'}
-                dataset.append((metadata, atoms))
+    for success_file in success_files:
+        with open(success_file, 'r') as f:
+            for line in f:
+                structure = json.loads(line)
+                atoms = mol2_to_ase(structure['mol2_string'])
+                if atoms:
+                    # Remove mol2_string from metadata to save memory
+                    metadata = {k: v for k, v in structure.items() if k != 'mol2_string'}
+                    dataset.append((metadata, atoms))
     
     return dataset
 
 
-def load_dataset_as_qcelemental(jsonl_file: str) -> list[tuple[dict, dict]]:
+def load_dataset_as_qcelemental(output_dir: str) -> list[tuple[dict, dict]]:
     """
-    Load entire dataset and convert all mol2 strings to QCElemental molecules.
+    Load entire dataset from chunked files and convert all mol2 strings to QCElemental molecules.
     
     Args:
-        jsonl_file: Path to successful_structures.jsonl file
+        output_dir: Path to the output directory containing chunked JSONL files
         
     Returns:
         List of (metadata_dict, qcelemental_dict) tuples
@@ -662,22 +578,29 @@ def load_dataset_as_qcelemental(jsonl_file: str) -> list[tuple[dict, dict]]:
         import qcelemental as qcel
         
         # Load all structures as QCElemental objects
-        dataset = load_dataset_as_qcelemental('dataset_output/successful_structures.jsonl')
+        dataset = load_dataset_as_qcelemental('dataset_output')
         
         for metadata, qce_dict in dataset:
             qce_mol = qcel.models.Molecule(**qce_dict)
             print(f"Metal: {metadata['metal']}, Formula: {qce_mol.molecular_formula}")
         ```
     """
+    from pathlib import Path
+    output_path = Path(output_dir)
+    
+    # Find all success chunk files
+    success_files = sorted(output_path.glob("successful_structures_chunk_*.jsonl"))
+    
     dataset = []
-    with open(jsonl_file, 'r') as f:
-        for line in f:
-            structure = json.loads(line)
-            qce_dict = mol2_to_qcelemental(structure['mol2_string'])
-            if qce_dict:
-                # Remove mol2_string from metadata to save memory
-                metadata = {k: v for k, v in structure.items() if k != 'mol2_string'}
-                dataset.append((metadata, qce_dict))
+    for success_file in success_files:
+        with open(success_file, 'r') as f:
+            for line in f:
+                structure = json.loads(line)
+                qce_dict = mol2_to_qcelemental(structure['mol2_string'])
+                if qce_dict:
+                    # Remove mol2_string from metadata to save memory
+                    metadata = {k: v for k, v in structure.items() if k != 'mol2_string'}
+                    dataset.append((metadata, qce_dict))
     
     return dataset
 
@@ -733,9 +656,9 @@ Examples:
 
     # With parallel processing and custom output
     python generate_dataset.py input.csv --workers 4 --output-dir my_results
-
-    # Resume from checkpoint with frequent saves
-    python generate_dataset.py input.csv --checkpoint-every 5 --progress-every 2
+    
+    # Large dataset with custom chunk size (50k structures per file)
+    python generate_dataset.py input.csv --workers 64 --output-chunk-size 50000
         """
     )
 
@@ -764,17 +687,10 @@ Examples:
     )
 
     parser.add_argument(
-        "--checkpoint-every",
+        "--output-chunk-size",
         type=int,
-        default=10,
-        help="Save checkpoint every N successful structures (default: 10)"
-    )
-
-    parser.add_argument(
-        "--progress-every",
-        type=int,
-        default=1,
-        help="Print progress every N percent (default: 1)"
+        default=100000,
+        help="Maximum number of structures per output file chunk (default: 100000)"
     )
 
     args = parser.parse_args()
@@ -803,6 +719,5 @@ Examples:
         ligand_dict_path=args.ligand_dict,
         output_dir=args.output_dir,
         workers=args.workers,
-        checkpoint_every=args.checkpoint_every,
-        progress_every=args.progress_every
+        output_chunk_size=args.output_chunk_size
     )
