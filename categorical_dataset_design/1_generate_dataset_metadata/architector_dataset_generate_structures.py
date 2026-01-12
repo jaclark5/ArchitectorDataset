@@ -591,7 +591,7 @@ def skip_function(candidate, variant_to_components):
     "neutral_only_ligands" list that do not have the property "N".
     """
 
-    neutral_only_ligands = ["choride", "oxo", "sulfido"]
+    neutral_only_ligands = ["oxo", "sulfido", "hydride"]
     for lig_key in candidate['Ligand_multiset_variants']:
         comp = variant_to_components[lig_key]
         if comp["type"] in neutral_only_ligands and comp["prop"] != "N":
