@@ -1,0 +1,27 @@
+Stratified Farthest Point Sampling with 4 cores
+Target: 200000 points
+
+=== Phase 1: Global Stratum Census ===
+  Total candidates: 25,942,166
+  Unique strata: 764
+  Locked candidates: 0
+
+=== Phase 2: Quota Allocation ===
+  Weighting strategy: equal
+  Points to select: 200000
+  Quota range: 261 - 857
+  Total quota: 200000
+
+=== Phase 3: Stratified Farthest Point Sampling ===
+  Collecting samples from each stratum...
+  Strata with samples: 764
+  Locked records found: 0
+  Running Farthest Point Sampling within each stratum...
+
+  Total selected: 182324
+
+=== Building Final Design Matrix ===
+  Design matrix shape: (182324, 53)
+
+Selected design saved to selected_design.csv
+Total selected: 182324 candidates

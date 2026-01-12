@@ -1,0 +1,13 @@
+{
+    "jsonl_file_path": "../../1_generate_dataset/one_ligand_type/dataset.jsonl",
+    "n_points": 200000,
+    "ligand_types": ["halide", "methyl", "methanediide", "ammonia", "amine", "imido", "water", "hydroxyl", "oxo", "phosphine", "phosphido", "hydrogen sulfide", "thiol", "sulfido"],
+    "ligand_subtypes": ["N"],
+    "include_variant_counts": false,
+    "seed": 123,
+    "weighting": "equal",
+    "min_per_stratum": 1,
+    "chunk_size": 100000,
+    "max_samples_per_stratum": 10000,
+    "output_file": "selected_design.csv"
+}
