@@ -23,6 +23,7 @@ dependencies:
   - nglview
   - scikit-learn
   - periodictable
+  - qcelemental
 
   - pip:
       - git+https://github.com/jaclark5/Architector@issue_install
