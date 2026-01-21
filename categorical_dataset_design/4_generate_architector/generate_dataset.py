@@ -312,10 +312,29 @@ class DatasetGenerator:
                 }
 
                 for future in as_completed(future_to_params):
-                    success, result_data = future.result()
-                    self._handle_result(success, result_data)
-                    successful_count += success
-                    error_count += not success
+                    try:
+                        success, result_data = future.result()
+                        self._handle_result(success, result_data)
+                        successful_count += success
+                        error_count += not success
+                    except Exception as e:
+                        params = future_to_params[future]
+                        print(f"Error processing structure with params {params}: {e}")
+                        traceback.print_exc()
+                        error_data = {
+                            'state_key': params['state_key'],
+                            'metal': params['metal'],
+                            'ox_state': params['ox_state'],
+                            'cn': params['cn'],
+                            'core_type': params['core_type'],
+                            'ligand_labels': params['ligand_labels'],
+                            'error_type': type(e).__name__,
+                            'error_message': str(e),
+                            'traceback': traceback.format_exc(),
+                            'timestamp': time.time()
+                        }
+                        self._save_error_structure(error_data)
+                        self.error_structures.append(error_data)
 
         print(f"\nDataset generation completed!")
         print(f"Successful structures: {successful_count}")
