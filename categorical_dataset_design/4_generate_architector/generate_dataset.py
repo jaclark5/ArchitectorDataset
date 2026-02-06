@@ -24,10 +24,11 @@ import traceback
 import json
 import pandas as pd
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import Pool, Manager
 from typing import Optional
 from ase import Atoms
 import qcelemental as qcel
+from multiprocessing import Manager
 
 from architector import build_complex
 
@@ -209,8 +210,11 @@ class DatasetGenerator:
             if not output:
                 raise ValueError("build_complex returned empty result")
 
-            # Get the first (and only) result
-            result = next(iter(output.values()))
+            if len(output) > 0:
+                print(f"  build_complex completed, {len(output)} options available, taking the first", flush=True)
+                result = next(iter(output.values()))
+            else:
+                raise ValueError("No build_complex output was produced.")
 
             # Custom sanity checks
             n_el = [result['xtb_n_unpaired_electrons'], result['calc_n_unpaired_electrons']]
@@ -256,6 +260,38 @@ class DatasetGenerator:
 
             return False, error_data
 
+    def safe_process(self, params, processed_state_keys):
+        """
+        Safely process a structure, handling errors gracefully.
+
+        Args:
+            params (dict): Structure parameters.
+            processed_state_keys (dict): Shared dictionary to track processed state keys.
+
+        Returns:
+            tuple: (success, result_data or error_data)
+        """
+        state_key = params['state_key']
+        if state_key in processed_state_keys:
+            print(f"Skipping already processed state_key: {state_key}")
+            return False, {}
+
+        try:
+            success, result_data = self.process_single_structure(params, self.ligand_dict)
+            processed_state_keys[state_key] = success
+            return success, result_data
+        except Exception as e:
+            print(f"Error processing state_key {state_key}: {e}")
+            traceback.print_exc()
+            error_data = {
+                'state_key': state_key,
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'traceback': traceback.format_exc(),
+                'timestamp': time.time()
+            }
+            return False, error_data
+
     def generate_dataset(self, n_workers: int = 1) -> None:
         """
         Generate the complete dataset.
@@ -292,6 +328,10 @@ class DatasetGenerator:
         
         print(f"Processing {len(structure_params_list)} structures with {n_workers} workers...")
         
+        # Shared state_keys set to prevent duplicate work
+        manager = Manager()
+        processed_state_keys = manager.dict()
+        
         # Process structures
         successful_count = 0
         error_count = 0
@@ -299,42 +339,23 @@ class DatasetGenerator:
         if n_workers == 1:
             # Sequential processing
             for params in structure_params_list:
-                success, result_data = self.process_single_structure(params, self.ligand_dict)
-                self._handle_result(success, result_data)
-                successful_count += success
-                error_count += not success
+                result = self.safe_process(params, processed_state_keys)
+                if result:
+                    success, result_data = result
+                    self._handle_result(success, result_data)
+                    successful_count += success
+                    error_count += not success
         else:
-            # Parallel processing
-            with ProcessPoolExecutor(max_workers=n_workers) as executor:
-                future_to_params = {
-                    executor.submit(self.process_single_structure, params, self.ligand_dict): params
-                    for params in structure_params_list
-                }
+            # Parallel processing using multiprocessing.Pool
+            with Pool(processes=n_workers) as pool:
+                results = pool.starmap(self.safe_process, [(params, processed_state_keys) for params in structure_params_list])
 
-                for future in as_completed(future_to_params):
-                    try:
-                        success, result_data = future.result()
+                for result in results:
+                    if result:
+                        success, result_data = result
                         self._handle_result(success, result_data)
                         successful_count += success
                         error_count += not success
-                    except Exception as e:
-                        params = future_to_params[future]
-                        print(f"Error processing structure with params {params}: {e}")
-                        traceback.print_exc()
-                        error_data = {
-                            'state_key': params['state_key'],
-                            'metal': params['metal'],
-                            'ox_state': params['ox_state'],
-                            'cn': params['cn'],
-                            'core_type': params['core_type'],
-                            'ligand_labels': params['ligand_labels'],
-                            'error_type': type(e).__name__,
-                            'error_message': str(e),
-                            'traceback': traceback.format_exc(),
-                            'timestamp': time.time()
-                        }
-                        self._save_error_structure(error_data)
-                        self.error_structures.append(error_data)
 
         print(f"\nDataset generation completed!")
         print(f"Successful structures: {successful_count}")
