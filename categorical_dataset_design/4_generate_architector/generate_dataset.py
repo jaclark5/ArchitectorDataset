@@ -292,6 +292,26 @@ class DatasetGenerator:
             }
             return False, error_data
 
+    def _flush_remaining_results(self):
+        """
+        Flush any remaining successful or error structures to their respective output files.
+        """
+        # Flush remaining successful structures
+        if self.success_count_in_chunk > 0:
+            success_file = self._get_success_file_path(self.success_chunk_index)
+            with open(success_file, 'a') as f:
+                for structure in self.successful_structures[-self.success_count_in_chunk:]:
+                    f.write(json.dumps(structure) + '\n')
+            print(f"Flushed {self.success_count_in_chunk} remaining successful structures to {success_file}")
+
+        # Flush remaining error structures
+        if self.error_count_in_chunk > 0:
+            error_file = self._get_error_file_path(self.error_chunk_index)
+            with open(error_file, 'a') as f:
+                for structure in self.error_structures[-self.error_count_in_chunk:]:
+                    f.write(json.dumps(structure) + '\n')
+            print(f"Flushed {self.error_count_in_chunk} remaining error structures to {error_file}")
+
     def generate_dataset(self, n_workers: int = 1) -> None:
         """
         Generate the complete dataset.
@@ -361,6 +381,9 @@ class DatasetGenerator:
         print(f"Successful structures: {successful_count}")
         print(f"Failed structures: {error_count}")
         print(f"Total processed: {successful_count + error_count}")
+
+        # Flush remaining results
+        self._flush_remaining_results()
 
         # Create final dataset CSV
         self._create_final_dataset()
@@ -729,7 +752,7 @@ Examples:
     parser.add_argument(
         "--output-chunk-size",
         type=int,
-        default=100000,
+        default=5000,
         help="Maximum number of structures per output file chunk (default: 100000)"
     )
 
