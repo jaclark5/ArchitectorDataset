@@ -20,7 +20,7 @@ VECLIB_MAXIMUM_THREADS=1
 
 date
 hn=`hostname`
-echo "Running job on host $hn"
+echo "Running job: ${SLURM_JOB_ID} on host $hn"
 
 source ~/.bashrc
 mamba activate architector
